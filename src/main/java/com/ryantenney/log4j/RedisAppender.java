@@ -38,6 +38,7 @@ import org.apache.log4j.spi.ErrorCode;
 import org.apache.log4j.spi.LoggingEvent;
 
 import redis.clients.jedis.Jedis;
+import redis.clients.jedis.exceptions.JedisConnectionException;
 import redis.clients.util.SafeEncoder;
 
 public class RedisAppender extends AppenderSkeleton implements Runnable {
@@ -168,11 +169,18 @@ public class RedisAppender extends AppenderSkeleton implements Runnable {
 
 	private void push() {
 		LogLog.debug("Sending " + messageIndex + " log messages to Redis");
-		jedis.rpush(SafeEncoder.encode(key),
-			batchSize == messageIndex
-				? batch
-				: Arrays.copyOf(batch, messageIndex));
-		messageIndex = 0;
+		try {
+			jedis.rpush(SafeEncoder.encode(key),
+				batchSize == messageIndex
+					? batch
+					: Arrays.copyOf(batch, messageIndex));
+			messageIndex = 0;
+		} catch (JedisConnectionException e) {
+			LogLog.warn("Lost connection to Redis: " + e.getMessage());
+			if (connect()) {
+				push();
+			}
+		}
 	}
 
 	public void setHost(String host) {
