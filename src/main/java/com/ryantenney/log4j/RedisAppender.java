@@ -177,9 +177,13 @@ public class RedisAppender extends AppenderSkeleton implements Runnable {
 			messageIndex = 0;
 		} catch (JedisConnectionException e) {
 			LogLog.warn("Lost connection to Redis: " + e.getMessage());
+			jedis.disconnect();
 			if (connect()) {
 				push();
 			}
+		} catch (ArrayIndexOutOfBoundsException e) {
+			events.clear();
+			messageIndex = 0;
 		}
 	}
 
