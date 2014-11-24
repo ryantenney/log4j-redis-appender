@@ -24,8 +24,11 @@
 
 package com.ryantenney.log4j;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Queue;
+import java.util.Random;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -38,11 +41,14 @@ import org.apache.log4j.spi.ErrorCode;
 import org.apache.log4j.spi.LoggingEvent;
 
 import redis.clients.jedis.Jedis;
+import redis.clients.jedis.exceptions.JedisConnectionException;
 import redis.clients.util.SafeEncoder;
 
 public class RedisAppender extends AppenderSkeleton implements Runnable {
 
 	private String host = "localhost";
+	private List<String> hosts = new ArrayList<String>();
+	Random hostRandomizer = new Random();
 	private int port = 6379;
 	private String password;
 	private String key;
@@ -61,6 +67,21 @@ public class RedisAppender extends AppenderSkeleton implements Runnable {
 
 	private ScheduledExecutorService executor;
 	private ScheduledFuture<?> task;
+	
+	private void parseHost() {
+		if (host.contains(",")) {
+			String[] parts = host.split(",");
+			for (String element : parts) {
+				hosts.add(element);
+			}
+		} else {
+			hosts.add(host);
+		}
+	}
+	
+	private void randomizeHost() {
+		this.host = this.hosts.get(hostRandomizer.nextInt(this.hosts.size()));
+	}
 
 	@Override
 	public void activateOptions() {
@@ -78,6 +99,8 @@ public class RedisAppender extends AppenderSkeleton implements Runnable {
 			batch = new byte[batchSize][];
 			messageIndex = 0;
 
+			parseHost();
+			randomizeHost();
 			jedis = new Jedis(host, port);
 			task = executor.scheduleWithFixedDelay(this, period, period, TimeUnit.MILLISECONDS);
 		} catch (Exception e) {
@@ -118,7 +141,9 @@ public class RedisAppender extends AppenderSkeleton implements Runnable {
 	private boolean connect() {
 		try {
 			if (!jedis.isConnected()) {
+				randomizeHost();
 				LogLog.debug("Connecting to Redis: " + host);
+				jedis = new Jedis(host, port);
 				jedis.connect();
 
 				if (password != null) {
@@ -168,11 +193,22 @@ public class RedisAppender extends AppenderSkeleton implements Runnable {
 
 	private void push() {
 		LogLog.debug("Sending " + messageIndex + " log messages to Redis");
-		jedis.rpush(SafeEncoder.encode(key),
-			batchSize == messageIndex
-				? batch
-				: Arrays.copyOf(batch, messageIndex));
-		messageIndex = 0;
+		try {
+			jedis.rpush(SafeEncoder.encode(key),
+				batchSize == messageIndex
+					? batch
+					: Arrays.copyOf(batch, messageIndex));
+			messageIndex = 0;
+		} catch (JedisConnectionException e) {
+			LogLog.warn("Lost connection to Redis on server " + host.toString() + ": " + e.getMessage());
+			jedis.disconnect();
+			if (connect()) {
+				push();
+			}
+		} catch (ArrayIndexOutOfBoundsException e) {
+			events.clear();
+			messageIndex = 0;
+		}
 	}
 
 	public void setHost(String host) {

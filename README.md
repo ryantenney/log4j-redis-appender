@@ -24,7 +24,7 @@ This appender pushes log messages to a Redis list. Here is an example configurat
 Where:
 
 * **key** (_required_) key of the list to push log messages
-* **host** (optional, default: localhost)
+* **host** (optional, default: localhost) can be list delimited by ","
 * **port** (optional, default: 6379)
 * **password** (optional) redis password, if required
 * **period** (optional, default: 500) the period in milliseconds between 
