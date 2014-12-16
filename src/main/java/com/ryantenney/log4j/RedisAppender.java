@@ -123,7 +123,7 @@ public class RedisAppender extends AppenderSkeleton implements Runnable {
                 poolConfig.setBlockWhenExhausted(blockWhenExhaused);
             }
             if (minIdle > 0) {
-                poolConfig.setMaxIdle(minIdle);
+                poolConfig.setMinIdle(minIdle);
             }
             if (maxIdle > 0) {
                 poolConfig.setMaxIdle(maxIdle);
@@ -146,7 +146,7 @@ public class RedisAppender extends AppenderSkeleton implements Runnable {
 
 			task = executor.scheduleWithFixedDelay(this, period, period, TimeUnit.MILLISECONDS);
 		} catch (Exception e) {
-			LogLog.error("Error during activateOptions", e);
+			LogLog.error("RedisAppender: Error during activateOptions", e);
 		}
 	}
 
@@ -156,7 +156,7 @@ public class RedisAppender extends AppenderSkeleton implements Runnable {
 			populateEvent(event);
 			events.add(event);
 		} catch (Exception e) {
-			errorHandler.error("Error populating event and adding to queue", e, ErrorCode.GENERIC_FAILURE, event);
+			errorHandler.error("Error populating event and adding Redis to queue", e, ErrorCode.GENERIC_FAILURE, event);
 		}
 	}
 
@@ -219,12 +219,12 @@ public class RedisAppender extends AppenderSkeleton implements Runnable {
                         if (i >= connectionPoolRetryCount) {
                             // something wrong
                             if (purgeOnFailure) {
-                                LogLog.debug("Purging event queue");
+                                LogLog.debug("Purging Redis event queue");
                                 events.clear();
                                 messageIndex = 0;
                             }
                             jedis.returnBrokenResource(connection);
-                            LogLog.error("Error during getting connection from pool check your settings");
+                            LogLog.error("Error during getting connection from pool check your Redis settings");
                             return;
                         }
                     }
@@ -238,7 +238,7 @@ public class RedisAppender extends AppenderSkeleton implements Runnable {
                 : Arrays.copyOf(batch, messageIndex));
             messageIndex = 0;
         } catch (Exception e) {
-            LogLog.error("Error pushing message list to redis",e);
+            LogLog.error("Error pushing message list to Redis",e);
         } finally {
             if (connection!=null) {
                 jedis.returnResource(connection);
