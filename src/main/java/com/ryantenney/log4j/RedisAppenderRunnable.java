@@ -32,6 +32,8 @@ public class RedisAppenderRunnable implements Runnable {
     private boolean purgeOnFailure;
     private String key;
 
+    private String lastExceptionMessage;
+
     public void run() {
 
         try {
@@ -61,7 +63,6 @@ public class RedisAppenderRunnable implements Runnable {
     }
 
     private void push() {
-        LogLog.debug("Sending " + messageIndex + " log messages to Redis");
         Jedis connection = jedisPool.getResource();
         try {
             // this may all be unnecessary with the pooling set up right just being super cautious
@@ -93,8 +94,15 @@ public class RedisAppenderRunnable implements Runnable {
                             ? batch
                             : Arrays.copyOf(batch, messageIndex));
             messageIndex = 0;
+            lastExceptionMessage = null;
         } catch (Exception e) {
-            LogLog.error("Error pushing message list to Redis",e);
+            // In case of an OOM this Exception might be triggered a lot. Only log it once completely.
+            if (e.getMessage() != null && e.getMessage().equals(lastExceptionMessage)) {
+                LogLog.error("Error pushing message list to Redis: " + e.getMessage());
+            } else {
+                LogLog.error("Error pushing message list to Redis",e);
+            }
+            lastExceptionMessage = e.getMessage();
         } finally {
             if (connection!=null) {
                 jedisPool.returnResource(connection);
