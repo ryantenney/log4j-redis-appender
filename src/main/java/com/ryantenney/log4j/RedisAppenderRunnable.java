@@ -14,7 +14,7 @@ import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 /**
- * Florian Hopf. mail@florian-hopf.de
+ * Keeps the batch of messages in memory and pushes them to Redis.
  */
 public class RedisAppenderRunnable implements Runnable {
 
@@ -24,12 +24,13 @@ public class RedisAppenderRunnable implements Runnable {
 
     private Queue<LoggingEvent> events = new ConcurrentLinkedQueue<LoggingEvent>();
     private Layout layout;
-    private byte[][] batch = new byte[batchSize][];
+    private byte[][] batch;
     private ErrorHandler errorHandler;
     private boolean alwaysBatch;
     private JedisPool jedisPool;
     private int connectionPoolRetryCount;
     private boolean purgeOnFailure;
+    private String key;
 
     public void run() {
 
@@ -40,6 +41,11 @@ public class RedisAppenderRunnable implements Runnable {
             while ((event = events.poll()) != null) {
                 try {
                     String message = layout.format(event);
+                    // if there has been an error the messageIndex might be too large
+                    // reset it to a valid value, overwrite the last message in the batch
+                    if (messageIndex >= batchSize) {
+                        messageIndex = batchSize - 1;
+                    }
                     batch[messageIndex++] = SafeEncoder.encode(message);
                 } catch (Exception e) {
                     errorHandler.error(e.getMessage(), e, ErrorCode.GENERIC_FAILURE, event);
@@ -97,6 +103,7 @@ public class RedisAppenderRunnable implements Runnable {
     }
 
     public void setBatchSize(int batchSize) {
+        batch = new byte[batchSize][];
         this.batchSize = batchSize;
     }
 
@@ -126,5 +133,9 @@ public class RedisAppenderRunnable implements Runnable {
 
     public void add(LoggingEvent event) {
         events.add(event);
+    }
+
+    public void setKey(String key) {
+        this.key = key;
     }
 }

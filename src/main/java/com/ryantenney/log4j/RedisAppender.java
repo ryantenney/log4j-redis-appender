@@ -85,15 +85,6 @@ public class RedisAppender extends AppenderSkeleton {
 
 			if (task != null && !task.isDone()) task.cancel(true);
 
-            redisAppenderRunnable = new RedisAppenderRunnable();
-            redisAppenderRunnable.setBatchSize(batchSize);
-            redisAppenderRunnable.setLayout(layout);
-            redisAppenderRunnable.setErrorHandler(errorHandler);
-            redisAppenderRunnable.setAlwaysBatch(alwaysBatch);
-            redisAppenderRunnable.setJedisPool(jedisPool);
-            redisAppenderRunnable.setConnectionPoolRetryCount(connectionPoolRetryCount);
-            redisAppenderRunnable.setPurgeOnFailure(purgeOnFailure);
-
             JedisPoolConfig poolConfig = new JedisPoolConfig();
             if (lifo) {
                 poolConfig.setLifo(lifo);
@@ -138,7 +129,17 @@ public class RedisAppender extends AppenderSkeleton {
                 jedisPool = new JedisPool(poolConfig,host,port,timeout);
             }
 
-			task = executor.scheduleWithFixedDelay(redisAppenderRunnable, period, period, TimeUnit.MILLISECONDS);
+            redisAppenderRunnable = new RedisAppenderRunnable();
+            redisAppenderRunnable.setBatchSize(batchSize);
+            redisAppenderRunnable.setLayout(layout);
+            redisAppenderRunnable.setErrorHandler(errorHandler);
+            redisAppenderRunnable.setAlwaysBatch(alwaysBatch);
+            redisAppenderRunnable.setJedisPool(jedisPool);
+            redisAppenderRunnable.setConnectionPoolRetryCount(connectionPoolRetryCount);
+            redisAppenderRunnable.setPurgeOnFailure(purgeOnFailure);
+            redisAppenderRunnable.setKey(key);
+
+            task = executor.scheduleWithFixedDelay(redisAppenderRunnable, period, period, TimeUnit.MILLISECONDS);
 		} catch (Exception e) {
 			LogLog.error("RedisAppender: Error during activateOptions", e);
 		}
