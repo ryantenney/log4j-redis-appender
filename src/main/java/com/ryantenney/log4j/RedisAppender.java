@@ -65,6 +65,7 @@ public class RedisAppender extends AppenderSkeleton {
     private boolean testWhileIdle = false;
     private boolean testOnReturn = false;
     private int connectionPoolRetryCount = 2;
+    private int maxEvents = Integer.MAX_VALUE;
 
     private JedisPool jedisPool;
 
@@ -138,6 +139,7 @@ public class RedisAppender extends AppenderSkeleton {
             redisAppenderRunnable.setConnectionPoolRetryCount(connectionPoolRetryCount);
             redisAppenderRunnable.setPurgeOnFailure(purgeOnFailure);
             redisAppenderRunnable.setKey(key);
+            redisAppenderRunnable.setMaxEvents(maxEvents);
 
             task = executor.scheduleWithFixedDelay(redisAppenderRunnable, period, period, TimeUnit.MILLISECONDS);
 		} catch (Exception e) {
@@ -325,5 +327,13 @@ public class RedisAppender extends AppenderSkeleton {
 
     public void setConnectionPoolRetryCount(int connectionPoolRetryCount) {
         this.connectionPoolRetryCount = connectionPoolRetryCount;
+    }
+
+    public void setMaxEvents(int maxEvents) {
+        this.maxEvents = maxEvents;
+    }
+
+    public int getMaxEvents() {
+        return maxEvents;
     }
 }

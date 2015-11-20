@@ -31,6 +31,7 @@ public class RedisAppenderRunnable implements Runnable {
     private int connectionPoolRetryCount;
     private boolean purgeOnFailure;
     private String key;
+    private int maxEvents;
 
     private String lastExceptionMessage;
 
@@ -140,10 +141,20 @@ public class RedisAppenderRunnable implements Runnable {
     }
 
     public void add(LoggingEvent event) {
-        events.add(event);
+        if (events.size() < maxEvents) {
+            events.add(event);
+        }
+    }
+
+    long eventsSize() {
+        return events.size();
     }
 
     public void setKey(String key) {
         this.key = key;
+    }
+
+    public void setMaxEvents(int maxEvents) {
+        this.maxEvents = maxEvents;
     }
 }

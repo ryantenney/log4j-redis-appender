@@ -15,6 +15,7 @@ import redis.clients.jedis.exceptions.JedisDataException;
 import redis.clients.util.SafeEncoder;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.Matchers.any;
 
 import static org.junit.Assert.assertNotNull;
@@ -48,6 +49,7 @@ public class RedisAppenderRunnableTest {
         runnable.setErrorHandler(errorHandler);
         runnable.setJedisPool(jedisPool);
         runnable.setLayout(layout);
+        runnable.setMaxEvents(Integer.MAX_VALUE);
         runnable.setKey("key");
 
         when(jedisPool.getResource()).thenReturn(jedis);
@@ -106,6 +108,16 @@ public class RedisAppenderRunnableTest {
                 new byte[]{54}, new byte[]{55},
                 new byte[]{56}, "foo".getBytes()
         );
+    }
+
+    @Test
+    public void maxEventsCanBeConfigured() {
+        runnable.setMaxEvents(10);
+        for (int i = 0; i < 11; i++) {
+            runnable.add(loggingEvent(String.valueOf(i)));
+        }
+
+        assertEquals(10, runnable.eventsSize());
     }
 
     private LoggingEvent loggingEvent(String text) {
