@@ -19,6 +19,7 @@
 * @author Pavlo Baron <pb at pbit dot org>
 * @author Landro Silva
 * @author Ryan Tenney <ryan@10e.us>
+* @author Ryan Vanderwerf <rvanderwerf @ gmail dot com>
 * @copyright 2012 Pavlo Baron
 **/
 
@@ -38,6 +39,8 @@ import org.apache.log4j.spi.ErrorCode;
 import org.apache.log4j.spi.LoggingEvent;
 
 import redis.clients.jedis.Jedis;
+import redis.clients.jedis.JedisPool;
+import redis.clients.jedis.JedisPoolConfig;
 import redis.clients.util.SafeEncoder;
 
 public class RedisAppender extends AppenderSkeleton implements Runnable {
@@ -47,17 +50,36 @@ public class RedisAppender extends AppenderSkeleton implements Runnable {
 	private String password;
 	private String key;
 
+    // these are the jedispoolconfig object settings
+    private int timeout = 2000;
 	private int batchSize = 100;
 	private long period = 500;
 	private boolean alwaysBatch = true;
 	private boolean purgeOnFailure = true;
 	private boolean daemonThread = true;
+    private long minEvictableIdleTimeMillis = 60000L;
+    private long timeBetweenEvictionRunsMillis = 30000L;
+    private int numTestsPerEvictionRun = -1;
+    private int maxTotal = 8;
+    private int maxIdle = 0;
+    private int minIdle = 0;
+    private boolean blockWhenExhaused = false;
+    private String evictionPolicyClassName = "";
+    private boolean lifo = false;
+    private boolean testOnBorrow = false;
+    private boolean testWhileIdle = false;
+    private boolean testOnReturn = false;
+    private int connectionPoolRetryCount = 2;
+
+
+
 
 	private int messageIndex = 0;
+    private JedisPool jedis;
 	private Queue<LoggingEvent> events;
 	private byte[][] batch;
 
-	private Jedis jedis;
+	//private Jedis jedis;
 
 	private ScheduledExecutorService executor;
 	private ScheduledFuture<?> task;
@@ -72,16 +94,59 @@ public class RedisAppender extends AppenderSkeleton implements Runnable {
 			if (executor == null) executor = Executors.newSingleThreadScheduledExecutor(new NamedThreadFactory("RedisAppender", daemonThread));
 
 			if (task != null && !task.isDone()) task.cancel(true);
-			if (jedis != null && jedis.isConnected()) jedis.disconnect();
 
-			events = new ConcurrentLinkedQueue<LoggingEvent>();
+            events = new ConcurrentLinkedQueue<LoggingEvent>();
 			batch = new byte[batchSize][];
 			messageIndex = 0;
 
-			jedis = new Jedis(host, port);
+			//jedis = new Jedis(host, port);
+            JedisPoolConfig poolConfig = new JedisPoolConfig();
+            if (lifo) {
+                poolConfig.setLifo(lifo);
+            }
+            if (testOnBorrow) {
+                poolConfig.setTestOnBorrow(testOnBorrow);
+            }
+            if (isTestWhileIdle()) {
+                poolConfig.setTestWhileIdle(isTestWhileIdle());
+            }
+            if (testOnReturn) {
+                poolConfig.setTestOnReturn(testOnReturn);
+            }
+            if (timeBetweenEvictionRunsMillis > 0) {
+                poolConfig.setTimeBetweenEvictionRunsMillis(timeBetweenEvictionRunsMillis);
+            }
+            if (evictionPolicyClassName!=null && evictionPolicyClassName.length() >0) {
+                poolConfig.setEvictionPolicyClassName(evictionPolicyClassName);
+            }
+            if (blockWhenExhaused) {
+                poolConfig.setBlockWhenExhausted(blockWhenExhaused);
+            }
+            if (minIdle > 0) {
+                poolConfig.setMinIdle(minIdle);
+            }
+            if (maxIdle > 0) {
+                poolConfig.setMaxIdle(maxIdle);
+            }
+            if (numTestsPerEvictionRun > 0) {
+                poolConfig.setNumTestsPerEvictionRun(numTestsPerEvictionRun);
+            }
+            if (maxTotal != 8) {
+                poolConfig.setMaxTotal(maxTotal);
+            }
+            if (minEvictableIdleTimeMillis > 0) {
+                poolConfig.setMinEvictableIdleTimeMillis(minEvictableIdleTimeMillis);
+            }
+
+            if (password!=null && password.length()>0) {
+                jedis  = new JedisPool(poolConfig,host,port,timeout,password);
+            } else {
+                jedis  = new JedisPool(poolConfig,host,port,timeout);
+            }
+
 			task = executor.scheduleWithFixedDelay(this, period, period, TimeUnit.MILLISECONDS);
 		} catch (Exception e) {
-			LogLog.error("Error during activateOptions", e);
+			LogLog.error("RedisAppender: Error during activateOptions", e);
 		}
 	}
 
@@ -91,7 +156,7 @@ public class RedisAppender extends AppenderSkeleton implements Runnable {
 			populateEvent(event);
 			events.add(event);
 		} catch (Exception e) {
-			errorHandler.error("Error populating event and adding to queue", e, ErrorCode.GENERIC_FAILURE, event);
+			errorHandler.error("Error populating event and adding Redis to queue", e, ErrorCode.GENERIC_FAILURE, event);
 		}
 	}
 
@@ -109,41 +174,14 @@ public class RedisAppender extends AppenderSkeleton implements Runnable {
 		try {
 			task.cancel(false);
 			executor.shutdown();
-			jedis.disconnect();
+
 		} catch (Exception e) {
 			errorHandler.error(e.getMessage(), e, ErrorCode.CLOSE_FAILURE);
 		}
 	}
 
-	private boolean connect() {
-		try {
-			if (!jedis.isConnected()) {
-				LogLog.debug("Connecting to Redis: " + host);
-				jedis.connect();
-
-				if (password != null) {
-					String result = jedis.auth(password);
-					if (!"OK".equals(result)) {
-						LogLog.error("Error authenticating with Redis: " + host);
-					}
-				}
-			}
-			return true;
-		} catch (Exception e) {
-			LogLog.error("Error connecting to Redis server", e);
-			return false;
-		}
-	}
-
 	public void run() {
-		if (!connect()) {
-			if (purgeOnFailure) {
-				LogLog.debug("Purging event queue");
-				events.clear();
-				messageIndex = 0;
-			}
-			return;
-		}
+
 
 		try {
 			if (messageIndex == batchSize) push();
@@ -168,12 +206,45 @@ public class RedisAppender extends AppenderSkeleton implements Runnable {
 
 	private void push() {
 		LogLog.debug("Sending " + messageIndex + " log messages to Redis");
-		jedis.rpush(SafeEncoder.encode(key),
-			batchSize == messageIndex
-				? batch
-				: Arrays.copyOf(batch, messageIndex));
-		messageIndex = 0;
-	}
+        Jedis connection = jedis.getResource();
+        try {
+            // this may all be unnecessary with the pooling set up right just being super cautious
+            if (!connection.isConnected()) {
+                jedis.returnBrokenResource(connection);
+                for (int i = 0; i < connectionPoolRetryCount; i++) {
+                    connection = jedis.getResource();
+                    if (connection.isConnected()) {
+                        break;
+                    } else {
+                        if (i >= connectionPoolRetryCount) {
+                            // something wrong
+                            if (purgeOnFailure) {
+                                LogLog.debug("Purging Redis event queue");
+                                events.clear();
+                                messageIndex = 0;
+                            }
+                            jedis.returnBrokenResource(connection);
+                            LogLog.error("Error during getting connection from pool check your Redis settings");
+                            return;
+                        }
+                    }
+
+                }
+
+            }
+            connection.rpush(SafeEncoder.encode(key),
+                batchSize == messageIndex
+                ? batch
+                : Arrays.copyOf(batch, messageIndex));
+            messageIndex = 0;
+        } catch (Exception e) {
+            LogLog.error("Error pushing message list to Redis",e);
+        } finally {
+            if (connection!=null) {
+                jedis.returnResource(connection);
+            }
+        }
+    }
 
 	public void setHost(String host) {
 		this.host = host;
@@ -211,8 +282,119 @@ public class RedisAppender extends AppenderSkeleton implements Runnable {
 		this.daemonThread = daemonThread;
 	}
 
-	public boolean requiresLayout() {
+    public int getTimeout() {
+        return timeout;
+    }
+
+    public void setTimeout(int timeout) {
+        this.timeout = timeout;
+    }
+
+    public long getMinEvictableIdleTimeMillis() {
+        return minEvictableIdleTimeMillis;
+    }
+
+    public void setMinEvictableIdleTimeMillis(long minEvictableIdleTimeMillis) {
+        this.minEvictableIdleTimeMillis = minEvictableIdleTimeMillis;
+    }
+
+    public long getTimeBetweenEvictionRunsMillis() {
+        return timeBetweenEvictionRunsMillis;
+    }
+
+    public void setTimeBetweenEvictionRunsMillis(long timeBetweenEvictionRunsMillis) {
+        this.timeBetweenEvictionRunsMillis = timeBetweenEvictionRunsMillis;
+    }
+
+    public int getNumTestsPerEvictionRun() {
+        return numTestsPerEvictionRun;
+    }
+
+    public void setNumTestsPerEvictionRun(int numTestsPerEvictionRun) {
+        this.numTestsPerEvictionRun = numTestsPerEvictionRun;
+    }
+
+    public int getMaxTotal() {
+        return maxTotal;
+    }
+
+    public void setMaxTotal(int maxTotal) {
+        this.maxTotal = maxTotal;
+    }
+
+    public int getMaxIdle() {
+        return maxIdle;
+    }
+
+    public void setMaxIdle(int maxIdle) {
+        this.maxIdle = maxIdle;
+    }
+
+    public int getMinIdle() {
+        return minIdle;
+    }
+
+    public void setMinIdle(int minIdle) {
+        this.minIdle = minIdle;
+    }
+
+    public boolean isBlockWhenExhaused() {
+        return blockWhenExhaused;
+    }
+
+    public void setBlockWhenExhaused(boolean blockWhenExhaused) {
+        this.blockWhenExhaused = blockWhenExhaused;
+    }
+
+    public String getEvictionPolicyClassName() {
+        return evictionPolicyClassName;
+    }
+
+    public void setEvictionPolicyClassName(String evictionPolicyClassName) {
+        this.evictionPolicyClassName = evictionPolicyClassName;
+    }
+
+    public boolean isLifo() {
+        return lifo;
+    }
+
+    public void setLifo(boolean lifo) {
+        this.lifo = lifo;
+    }
+
+    public boolean isTestOnBorrow() {
+        return testOnBorrow;
+    }
+
+    public void setTestOnBorrow(boolean testOnBorrow) {
+        this.testOnBorrow = testOnBorrow;
+    }
+
+    public boolean isTestWhileIdle() {
+        return testWhileIdle;
+    }
+
+    public void setTestWhileIdle(boolean testWhileIdle) {
+        this.testWhileIdle = testWhileIdle;
+    }
+
+    public boolean isTestOnReturn() {
+        return testOnReturn;
+    }
+
+    public void setTestOnReturn(boolean testOnReturn) {
+        this.testOnReturn = testOnReturn;
+    }
+
+    public boolean requiresLayout() {
 		return true;
 	}
 
+    public int getConnectionPoolRetryCount() {
+        return connectionPoolRetryCount;
+    }
+
+    public void setConnectionPoolRetryCount(int connectionPoolRetryCount) {
+        this.connectionPoolRetryCount = connectionPoolRetryCount;
+    }
 }
