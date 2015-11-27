@@ -25,9 +25,6 @@
 
 package com.ryantenney.log4j;
 
-import java.util.Arrays;
-import java.util.Queue;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -38,12 +35,10 @@ import org.apache.log4j.helpers.LogLog;
 import org.apache.log4j.spi.ErrorCode;
 import org.apache.log4j.spi.LoggingEvent;
 
-import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.JedisPoolConfig;
-import redis.clients.util.SafeEncoder;
 
-public class RedisAppender extends AppenderSkeleton implements Runnable {
+public class RedisAppender extends AppenderSkeleton {
 
 	private String host = "localhost";
 	private int port = 6379;
@@ -70,19 +65,15 @@ public class RedisAppender extends AppenderSkeleton implements Runnable {
     private boolean testWhileIdle = false;
     private boolean testOnReturn = false;
     private int connectionPoolRetryCount = 2;
+    private int maxEvents = Integer.MAX_VALUE;
 
-
-
-
-	private int messageIndex = 0;
-    private JedisPool jedis;
-	private Queue<LoggingEvent> events;
-	private byte[][] batch;
-
-	//private Jedis jedis;
+    private JedisPool jedisPool;
 
 	private ScheduledExecutorService executor;
 	private ScheduledFuture<?> task;
+
+
+    private RedisAppenderRunnable redisAppenderRunnable;
 
 	@Override
 	public void activateOptions() {
@@ -95,11 +86,6 @@ public class RedisAppender extends AppenderSkeleton implements Runnable {
 
 			if (task != null && !task.isDone()) task.cancel(true);
 
-            events = new ConcurrentLinkedQueue<LoggingEvent>();
-			batch = new byte[batchSize][];
-			messageIndex = 0;
-
-			//jedis = new Jedis(host, port);
             JedisPoolConfig poolConfig = new JedisPoolConfig();
             if (lifo) {
                 poolConfig.setLifo(lifo);
@@ -139,12 +125,23 @@ public class RedisAppender extends AppenderSkeleton implements Runnable {
             }
 
             if (password!=null && password.length()>0) {
-                jedis  = new JedisPool(poolConfig,host,port,timeout,password);
+                jedisPool = new JedisPool(poolConfig,host,port,timeout,password);
             } else {
-                jedis  = new JedisPool(poolConfig,host,port,timeout);
+                jedisPool = new JedisPool(poolConfig,host,port,timeout);
             }
 
-			task = executor.scheduleWithFixedDelay(this, period, period, TimeUnit.MILLISECONDS);
+            redisAppenderRunnable = new RedisAppenderRunnable();
+            redisAppenderRunnable.setBatchSize(batchSize);
+            redisAppenderRunnable.setLayout(layout);
+            redisAppenderRunnable.setErrorHandler(errorHandler);
+            redisAppenderRunnable.setAlwaysBatch(alwaysBatch);
+            redisAppenderRunnable.setJedisPool(jedisPool);
+            redisAppenderRunnable.setConnectionPoolRetryCount(connectionPoolRetryCount);
+            redisAppenderRunnable.setPurgeOnFailure(purgeOnFailure);
+            redisAppenderRunnable.setKey(key);
+            redisAppenderRunnable.setMaxEvents(maxEvents);
+
+            task = executor.scheduleWithFixedDelay(redisAppenderRunnable, period, period, TimeUnit.MILLISECONDS);
 		} catch (Exception e) {
 			LogLog.error("RedisAppender: Error during activateOptions", e);
 		}
@@ -154,7 +151,7 @@ public class RedisAppender extends AppenderSkeleton implements Runnable {
 	protected void append(LoggingEvent event) {
 		try {
 			populateEvent(event);
-			events.add(event);
+            redisAppenderRunnable.add(event);
 		} catch (Exception e) {
 			errorHandler.error("Error populating event and adding Redis to queue", e, ErrorCode.GENERIC_FAILURE, event);
 		}
@@ -174,77 +171,11 @@ public class RedisAppender extends AppenderSkeleton implements Runnable {
 		try {
 			task.cancel(false);
 			executor.shutdown();
-
 		} catch (Exception e) {
 			errorHandler.error(e.getMessage(), e, ErrorCode.CLOSE_FAILURE);
 		}
 	}
 
-	public void run() {
-
-
-		try {
-			if (messageIndex == batchSize) push();
-
-			LoggingEvent event;
-			while ((event = events.poll()) != null) {
-				try {
-					String message = layout.format(event);
-					batch[messageIndex++] = SafeEncoder.encode(message);
-				} catch (Exception e) {
-					errorHandler.error(e.getMessage(), e, ErrorCode.GENERIC_FAILURE, event);
-				}
-
-				if (messageIndex == batchSize) push();
-			}
-
-			if (!alwaysBatch && messageIndex > 0) push();
-		} catch (Exception e) {
-			errorHandler.error(e.getMessage(), e, ErrorCode.WRITE_FAILURE);
-		}
-	}
-
-	private void push() {
-		LogLog.debug("Sending " + messageIndex + " log messages to Redis");
-        Jedis connection = jedis.getResource();
-        try {
-            // this may all be unnecessary with the pooling set up right just being super cautious
-            if (!connection.isConnected()) {
-                jedis.returnBrokenResource(connection);
-                for (int i = 0; i < connectionPoolRetryCount; i++) {
-                    connection = jedis.getResource();
-                    if (connection.isConnected()) {
-                        break;
-                    } else {
-                        if (i >= connectionPoolRetryCount) {
-                            // something wrong
-                            if (purgeOnFailure) {
-                                LogLog.debug("Purging Redis event queue");
-                                events.clear();
-                                messageIndex = 0;
-                            }
-                            jedis.returnBrokenResource(connection);
-                            LogLog.error("Error during getting connection from pool check your Redis settings");
-                            return;
-                        }
-                    }
-
-                }
-
-            }
-            connection.rpush(SafeEncoder.encode(key),
-                batchSize == messageIndex
-                ? batch
-                : Arrays.copyOf(batch, messageIndex));
-            messageIndex = 0;
-        } catch (Exception e) {
-            LogLog.error("Error pushing message list to Redis",e);
-        } finally {
-            if (connection!=null) {
-                jedis.returnResource(connection);
-            }
-        }
-    }
 
 	public void setHost(String host) {
 		this.host = host;
@@ -396,5 +327,13 @@ public class RedisAppender extends AppenderSkeleton implements Runnable {
 
     public void setConnectionPoolRetryCount(int connectionPoolRetryCount) {
         this.connectionPoolRetryCount = connectionPoolRetryCount;
+    }
+
+    public void setMaxEvents(int maxEvents) {
+        this.maxEvents = maxEvents;
+    }
+
+    public int getMaxEvents() {
+        return maxEvents;
     }
 }
